@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ScreenFusion Test Client</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 480px; margin: 0 auto; padding: 16px; background: #111; color: #eee; }
+  h1 { font-size: 20px; }
+  section { background: #1c1c1c; border-radius: 10px; padding: 14px; margin-bottom: 14px; }
+  label { display: block; font-size: 12px; opacity: 0.7; margin-bottom: 4px; }
+  input, button { width: 100%; box-sizing: border-box; padding: 10px; margin-bottom: 8px; border-radius: 8px; border: 1px solid #333; background: #222; color: #eee; font-size: 15px; }
+  button { background: #ffe600; color: #111; font-weight: bold; border: none; cursor: pointer; }
+  button:disabled { opacity: 0.4; }
+  #log { font-family: monospace; font-size: 12px; white-space: pre-wrap; max-height: 160px; overflow-y: auto; background: #000; padding: 8px; border-radius: 6px; }
+  .device { padding: 6px 0; border-bottom: 1px solid #333; font-size: 14px; }
+  .status-connected { color: #6f6; }
+  .status-lagging { color: #fc6; }
+  .status-disconnected { color: #f66; }
+  #qr { max-width: 100%; border-radius: 8px; margin-top: 8px; }
+</style>
+</head>
+<body>
+  <h1>ScreenFusion — Test Client</h1>
+
+  <section>
+    <label>Server address (host:port)</label>
+    <input id="serverAddr" placeholder="192.168.1.23:4000" autocomplete="off" />
+    <button id="createBtn">Create Session (become host)</button>
+    <div id="qrWrap" style="display:none">
+      <p>Session code: <b id="sessionCodeDisplay"></b></p>
+      <img id="qr" />
+    </div>
+  </section>
+
+  <section>
+    <label>Or join an existing session</label>
+    <input id="joinCode" placeholder="Session code, e.g. X7K2QP" />
+    <button id="joinBtn">Join Session</button>
+  </section>
+
+  <section>
+    <p>My role: <b id="myRole">—</b> | My device ID: <span id="myId">—</span></p>
+    <p>Sensors: <span id="sensorReadout">not sending</span></p>
+    <button id="sensorToggle" disabled>Start Sending Sensors</button>
+  </section>
+
+  <section>
+    <p><b>Devices in session</b></p>
+    <div id="devices">none yet</div>
+  </section>
+
+  <section>
+    <p><b>Log</b></p>
+    <div id="log"></div>
+  </section>
+
+<script>
+  let ws = null;
+  let sessionId = null;
+  let myDeviceId = null;
+  let sendingSensors = false;
+  let sensorInterval = null;
+  let latestOrientation = { heading: null, tilt: null };
+
+  const log = (msg) => {
+    const el = document.getElementById('log');
+    el.textContent += `[${new Date().toLocaleTimeString()}] ${msg}\n`;
+    el.scrollTop = el.scrollHeight;
+  };
+
+  const serverAddrInput = document.getElementById('serverAddr');
+  // Default to whatever host served this page.
+  serverAddrInput.value = window.location.host || '192.168.1.23:4000';
+
+  document.getElementById('createBtn').onclick = async () => {
+    const addr = serverAddrInput.value.trim();
+    log(`Requesting session from ${addr} ...`);
+    try {
+      const res = await fetch(`http://${addr}/session/create`, { method: 'POST' });
+      if (!res.ok) throw new Error(`Server responded ${res.status}`);
+      const data = await res.json();
+      sessionId = data.sessionId;
+      document.getElementById('sessionCodeDisplay').textContent = sessionId;
+      document.getElementById('qr').src = data.qrCode;
+      document.getElementById('qrWrap').style.display = 'block';
+      log(`Session created: ${sessionId}`);
+      connect(addr, sessionId, 'host');
+    } catch (err) {
+      log(`FAILED to reach ${addr} — check the server address is correct and current. (${err.message})`);
+    }
+  };
+
+  document.getElementById('joinBtn').onclick = () => {
+    const addr = serverAddrInput.value.trim();
+    const code = document.getElementById('joinCode').value.trim().toUpperCase();
+    if (!code) return log('Enter a session code first');
+    connect(addr, code, null);
+  };
+
+  function connect(addr, sessId, role) {
+    if (ws) ws.close();
+    ws = new WebSocket(`ws://${addr}/ws`);
+
+    ws.onopen = () => {
+      log(`WS connected to ${addr}`);
+      ws.send(JSON.stringify({ type: 'join', sessionId: sessId, role }));
+    };
+
+    ws.onmessage = (event) => {
+      const msg = JSON.parse(event.data);
+      handleServerMessage(msg);
+    };
+
+    ws.onerror = () => log('WS error — check server address and that phone is on same Wi-Fi');
+    ws.onclose = () => log('WS closed');
+  }
+
+  function handleServerMessage(msg) {
+    switch (msg.type) {
+      case 'joined':
+        sessionId = msg.sessionId;
+        myDeviceId = msg.deviceId;
+        document.getElementById('myRole').textContent = msg.role;
+        document.getElementById('myId').textContent = msg.deviceId.slice(0, 8);
+        document.getElementById('sensorToggle').disabled = false;
+        log(`Joined as ${msg.role} (id ${msg.deviceId.slice(0,8)})`);
+        break;
+      case 'device_list':
+        renderDevices(msg.devices);
+        break;
+      case 'tile_assignment':
+        if (msg.deviceId === myDeviceId) log(`Assigned tile index: ${msg.tileIndex}`);
+        break;
+      case 'device_status':
+        log(`Device ${msg.deviceId.slice(0,8)} is now ${msg.status}`);
+        break;
+      case 'sync_tick':
+        // Reply so the server knows we're still here, even if we're not streaming sensors.
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'sync_ack', clientTime: Date.now() }));
+        }
+        break;
+      case 'error':
+        log(`Server error: ${msg.message}`);
+        break;
+      default:
+        log(`Unhandled message: ${msg.type}`);
+    }
+  }
+
+  function renderDevices(devices) {
+    const el = document.getElementById('devices');
+    el.innerHTML = devices.map(d => `
+      <div class="device">
+        ${d.role === 'host' ? '⭐' : '📱'} ${d.id.slice(0,8)} —
+        <span class="status-${d.status}">${d.status}</span>
+        ${d.tileIndex !== null ? `— tile ${d.tileIndex}` : ''}
+        ${d.sensors.heading !== null ? `— heading ${Math.round(d.sensors.heading)}°` : ''}
+      </div>
+    `).join('');
+  }
+
+  // Sensor streaming: device orientation (heading/tilt) + battery, sent every 1s.
+  document.getElementById('sensorToggle').onclick = () => {
+    sendingSensors = !sendingSensors;
+    document.getElementById('sensorToggle').textContent = sendingSensors ? 'Stop Sending Sensors' : 'Start Sending Sensors';
+
+    if (sendingSensors) {
+      if (typeof DeviceOrientationEvent !== 'undefined' && DeviceOrientationEvent.requestPermission) {
+        // iOS 13+ requires an explicit permission prompt, must be triggered by user gesture.
+        DeviceOrientationEvent.requestPermission().catch(() => log('Orientation permission denied'));
+      }
+      window.addEventListener('deviceorientation', onOrientation);
+      sensorInterval = setInterval(sendSensorUpdate, 1000);
+    } else {
+      window.removeEventListener('deviceorientation', onOrientation);
+      clearInterval(sensorInterval);
+      document.getElementById('sensorReadout').textContent = 'not sending';
+    }
+  };
+
+  function onOrientation(e) {
+    latestOrientation = { heading: e.alpha, tilt: e.beta };
+  }
+
+  async function sendSensorUpdate() {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    let battery = null;
+    try {
+      if (navigator.getBattery) {
+        const b = await navigator.getBattery();
+        battery = Math.round(b.level * 100);
+      }
+    } catch {}
+    ws.send(JSON.stringify({
+      type: 'sensor_update',
+      heading: latestOrientation.heading,
+      tilt: latestOrientation.tilt,
+      battery,
+    }));
+    document.getElementById('sensorReadout').textContent =
+      `heading ${Math.round(latestOrientation.heading ?? 0)}°, tilt ${Math.round(latestOrientation.tilt ?? 0)}°, battery ${battery ?? '—'}%`;
+  }
+</script>
+</body>
+</html>
