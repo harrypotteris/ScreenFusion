@@ -17,7 +17,7 @@ const { v4: uuidv4 } = require("uuid");
  *   ws: WebSocket,
  *   status: 'connected' | 'lagging' | 'disconnected',
  *   tileIndex: number | null,
- *   sensors: { heading: number|null, tilt: number|null, battery: number|null, updatedAt: number|null },
+ *   sensors: { heading: number|null, tilt: number|null, battery: number|null, rssi: number|null, updatedAt: number|null },
  *   lastSeen: number
  * }
  */
@@ -69,7 +69,7 @@ function joinSession(sessionId, ws, requestedRole) {
     ws,
     status: "connected",
     tileIndex: null,
-    sensors: { heading: null, tilt: null, battery: null, updatedAt: null },
+    sensors: { heading: null, tilt: null, battery: null, rssi: null, updatedAt: null },
     lastSeen: Date.now(),
   });
 

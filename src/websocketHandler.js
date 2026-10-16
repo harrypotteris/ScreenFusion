@@ -6,7 +6,7 @@ const sessionManager = require("./sessionManager");
  *
  * Client -> Server
  *   { type: "join", sessionId, role?: "host" }
- *   { type: "sensor_update", heading, tilt, battery }
+ *   { type: "sensor_update", heading, tilt, battery, rssi }   (rssi is dBm signal strength to the Wi-Fi router, Android only)
  *   { type: "sync_ack", clientTime }
  *   { type: "video_control", action: "play"|"pause"|"seek", url?, positionSec? }   (host only)
  *   { type: "tile_assignment", assignments: { [deviceId]: tileIndex } }            (host only, or from LLM engine via host)
@@ -143,8 +143,8 @@ function handleJoin(ws, msg) {
 
 function handleSensorUpdate(ws, msg) {
   if (!requireJoined(ws)) return;
-  const { heading, tilt, battery } = msg;
-  sessionManager.updateSensors(ws.sessionId, ws.deviceId, { heading, tilt, battery });
+  const { heading, tilt, battery, rssi } = msg;
+  sessionManager.updateSensors(ws.sessionId, ws.deviceId, { heading, tilt, battery, rssi });
   broadcastDeviceList(ws.sessionId);
 }
 
